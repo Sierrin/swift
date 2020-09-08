@@ -62,15 +62,9 @@ namespace {
   /// file scope level so it will be set up correctly for this purpose.
   ///
   /// Creating an instance of this object will cause it to figure out
-  /// whether we are in the debugger function, whether it needs to swap 
+  /// whether we are in the debugger function, and whether it needs to swap
   /// the Decl that is currently being parsed.
-  /// If you have created the object, instead of returning the result
-  /// with makeParserResult, use the object's fixupParserResult.  If
-  /// no swap has occurred, these methods will work the same.  
-  /// If the decl has been moved, then Parser::markWasHandled will be
-  /// called on the Decl, and you should call declWasHandledAlready
-  /// before you consume the Decl to see if you actually need to
-  /// consume it.
+  ///
   /// If you are making one of these objects to address issue 1, call
   /// the constructor that only takes a DeclKind, and it will be moved
   /// unconditionally.  Otherwise pass in the Name and DeclKind and the
@@ -78,32 +72,24 @@ namespace {
   class DebuggerContextChange {
   protected:
     Parser &P;
-    Identifier Name;
-    SourceFile *SF;
     Optional<Parser::ContextChange> CC;
+    SourceFile *SF;
   public:
-    DebuggerContextChange (Parser &P)
-      : P(P), SF(nullptr) {
+    DebuggerContextChange(Parser &P) : P(P), SF(nullptr) {
       if (!inDebuggerContext())
         return;
-      else
-        switchContext();
+
+      switchContext();
     }
     
-    DebuggerContextChange (Parser &P, Identifier &Name, DeclKind Kind)
-      : P(P), Name(Name), SF(nullptr) {
+    DebuggerContextChange(Parser &P, Identifier Name, DeclKind Kind)
+        : P(P), SF(nullptr) {
       if (!inDebuggerContext())
         return;
-      bool globalize = false;
-        
-      DebuggerClient *debug_client = getDebuggerClient();
-      if (!debug_client)
-        return;
-      
-      globalize = debug_client->shouldGlobalize(Name, Kind);
-        
-      if (globalize)
-        switchContext();
+
+      if (auto *client = getDebuggerClient())
+        if (client->shouldGlobalize(Name, Kind))
+          switchContext();
     }
     
     bool movedToTopLevel() {
@@ -120,35 +106,27 @@ namespace {
     template <typename T>
     ParserResult<T>
     fixupParserResult(T *D) {
-      if (CC.hasValue()) {
-        swapDecl(D);
-      }
+      if (movedToTopLevel())
+        hoistDecl(D);
       return ParserResult<T>(D);
     }
     
     template <typename T>
     ParserResult<T>
     fixupParserResult(ParserStatus Status, T *D) {
-      if (CC.hasValue() && !Status.isError()) {
-        // If there is an error, don't do our splicing trick,
-        // just return the Decl and the status for reporting.
-        swapDecl(D);
-      }
+      if (movedToTopLevel())
+        hoistDecl(D);
       return makeParserResult(Status, D);
     }
 
     // The destructor doesn't need to do anything, the CC's destructor will
     // pop the context if we set it.
     ~DebuggerContextChange () {}
-  protected:
-  
-    DebuggerClient *getDebuggerClient()
-    {
-      ModuleDecl *PM = P.CurDeclContext->getParentModule();
-      if (!PM)
-          return nullptr;
-      else
-           return PM->getDebugClient();
+
+  private:
+    DebuggerClient *getDebuggerClient() {
+      ModuleDecl *M = P.CurDeclContext->getParentModule();
+      return M->getDebugClient();
     }
     
     bool inDebuggerContext() {
@@ -156,29 +134,26 @@ namespace {
         return false;
       if (!P.CurDeclContext)
         return false;
-      auto *func_decl = dyn_cast<FuncDecl>(P.CurDeclContext);
-      if (!func_decl)
+      auto *func = dyn_cast<FuncDecl>(P.CurDeclContext);
+      if (!func)
         return false;
-        
-      if (!func_decl->getAttrs().hasAttribute<LLDBDebuggerFunctionAttr>())
+
+      if (!func->getAttrs().hasAttribute<LLDBDebuggerFunctionAttr>())
         return false;
-      
+
       return true;
     }
     
-    void switchContext () {
+    void switchContext() {
       SF = P.CurDeclContext->getParentSourceFile();
-      CC.emplace (P, SF);
+      CC.emplace(P, SF);
     }
-    
-    void swapDecl (Decl *D)
-    {
-      assert (SF);
-      DebuggerClient *debug_client = getDebuggerClient();
-      assert (debug_client);
-      debug_client->didGlobalize(D);
-      P.ContextSwitchedTopLevelDecls.push_back(D);
-      P.markWasHandled(D);
+
+    template<typename T>
+    void hoistDecl(T *D) {
+      D->setHoisted();
+      SF->addHoistedDecl(D);
+      getDebuggerClient()->didGlobalize(D);
     }
   };
 } // end anonymous namespace
@@ -226,10 +201,6 @@ void Parser::parseTopLevel(SmallVectorImpl<Decl *> &decls) {
       consumeToken();
     }
   }
-
-  // First append any decls that LLDB requires be inserted at the top-level.
-  decls.append(ContextSwitchedTopLevelDecls.begin(),
-               ContextSwitchedTopLevelDecls.end());
 
   // Then append the top-level decls we parsed.
   for (auto item : items) {
@@ -7733,8 +7704,9 @@ Parser::parseDeclPrecedenceGroup(ParseDeclOptions flags,
   SourceLoc precedenceGroupLoc = consumeToken(tok::kw_precedencegroup);
   DebuggerContextChange DCC (*this);
 
-  if (!CodeCompletion && !DCC.movedToTopLevel() && !(flags & PD_AllowTopLevel))
-  {
+  if (!CodeCompletion &&
+      !DCC.movedToTopLevel() &&
+      !(flags & PD_AllowTopLevel)) {
     diagnose(precedenceGroupLoc, diag::decl_inner_scope);
     return nullptr;
   }

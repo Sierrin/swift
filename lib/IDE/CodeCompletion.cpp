@@ -3731,8 +3731,12 @@ public:
       llvm::SaveAndRestore<bool> ChangeNeedOptionalUnwrap(NeedOptionalUnwrap,
                                                           true);
       if (DotLoc.isValid()) {
+        // Let's not erase the dot if the completion is after a swift key path
+        // root because \A?.?.member is the correct way to access wrapped type
+        // member from an optional key path root.
+        auto loc = IsAfterSwiftKeyPathRoot ? DotLoc.getAdvancedLoc(1) : DotLoc;
         NumBytesToEraseForOptionalUnwrap = Ctx.SourceMgr.getByteDistance(
-            DotLoc, Ctx.SourceMgr.getCodeCompletionLoc());
+            loc, Ctx.SourceMgr.getCodeCompletionLoc());
       } else {
         NumBytesToEraseForOptionalUnwrap = 0;
       }
@@ -5940,7 +5944,7 @@ void CodeCompletionCallbacksImpl::doneParsing() {
     if (!OnRoot && KPE->getComponents().back().getKind() ==
                        KeyPathExpr::Component::Kind::OptionalWrap) {
       // KeyPath expr with '?' (e.g. '\Ty.[0].prop?.another').
-      // Althogh expected type is optional, we should unwrap it because it's
+      // Although expected type is optional, we should unwrap it because it's
       // unwrapped.
       baseType = baseType->getOptionalObjectType();
     }
@@ -6074,7 +6078,7 @@ void CodeCompletionCallbacksImpl::doneParsing() {
 
     // TypeName at attribute position after '@'.
     // - VarDecl: Property Wrappers.
-    // - ParamDecl/VarDecl/FuncDecl: Function Buildres.
+    // - ParamDecl/VarDecl/FuncDecl: Function Builders.
     if (!AttTargetDK || *AttTargetDK == DeclKind::Var ||
         *AttTargetDK == DeclKind::Param || *AttTargetDK == DeclKind::Func)
       Lookup.getTypeCompletionsInDeclContext(

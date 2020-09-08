@@ -312,6 +312,7 @@ SourceLookupCache::SourceLookupCache(const SourceFile &SF) {
   FrontendStatsTracer tracer(SF.getASTContext().Stats,
                              "source-file-populate-cache");
   addToUnqualifiedLookupCache(SF.getTopLevelDecls(), false);
+  addToUnqualifiedLookupCache(SF.getHoistedDecls(), false);
 }
 
 SourceLookupCache::SourceLookupCache(const ModuleDecl &M) {
@@ -322,8 +323,9 @@ SourceLookupCache::SourceLookupCache(const ModuleDecl &M) {
       addToUnqualifiedLookupCache(SFU->getTopLevelDecls(), false);
       continue;
     }
-    auto &SF = *cast<SourceFile>(file);
-    addToUnqualifiedLookupCache(SF.getTopLevelDecls(), false);
+    auto *SF = cast<SourceFile>(file);
+    addToUnqualifiedLookupCache(SF->getTopLevelDecls(), false);
+    addToUnqualifiedLookupCache(SF->getHoistedDecls(), false);
   }
 }
 
@@ -2335,11 +2337,21 @@ bool SourceFile::hasDelayedBodyParsing() const {
   return true;
 }
 
+/// Add a hoisted declaration. See Decl::isHoisted().
+void SourceFile::addHoistedDecl(Decl *d) {
+  assert(d->isHoisted());
+  Hoisted.push_back(d);
+}
+
 ArrayRef<Decl *> SourceFile::getTopLevelDecls() const {
   auto &ctx = getASTContext();
   auto *mutableThis = const_cast<SourceFile *>(this);
   return evaluateOrDefault(ctx.evaluator, ParseSourceFileRequest{mutableThis},
                            {}).TopLevelDecls;
+}
+
+ArrayRef<Decl *> SourceFile::getHoistedDecls() const {
+  return Hoisted;
 }
 
 bool FileUnit::walk(ASTWalker &walker) {

@@ -30,7 +30,6 @@
 #include "swift/Basic/LangOptions.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/ClangImporter/ClangImporter.h"
-#include "swift/ClangImporter/ClangImporterOptions.h"
 #include "swift/Frontend/DiagnosticVerifier.h"
 #include "swift/Frontend/FrontendOptions.h"
 #include "swift/Frontend/ModuleInterfaceSupport.h"
@@ -327,11 +326,6 @@ public:
   /// \returns true if we are doing code completion.
   bool isCodeCompletion() const {
     return CodeCompletionOffset != ~0U;
-  }
-
-  /// Called from lldb, see rdar://53971116
-  void disableASTScopeLookup() {
-    LangOpts.EnableASTScopeLookup = false;
   }
 
   /// Retrieve a module hash string that is suitable for uniquely
