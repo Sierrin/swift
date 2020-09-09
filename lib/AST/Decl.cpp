@@ -24,6 +24,7 @@
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Expr.h"
+#include "swift/AST/ForeignAsyncConvention.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
@@ -2484,7 +2485,11 @@ bool swift::conflicting(const OverloadSignature& sig1,
     return !((sig1.IsVariable && !sig2.Name.getArgumentNames().empty()) ||
              (sig2.IsVariable && !sig1.Name.getArgumentNames().empty()));
   }
-  
+
+  // If one is asynchronous and the other is not, they can't conflict.
+  if (sig1.HasAsync != sig2.HasAsync)
+    return false;
+
   // Note that we intentionally ignore the HasOpaqueReturnType bit here.
   // For declarations that can't be overloaded by type, we want them to be
   // considered conflicting independent of their type.
@@ -2707,6 +2712,8 @@ OverloadSignature ValueDecl::getOverloadSignature() const {
   signature.IsTypeAlias = isa<TypeAliasDecl>(this);
   signature.HasOpaqueReturnType =
                        !signature.IsVariable && (bool)getOpaqueResultTypeDecl();
+  signature.HasAsync = isa<AbstractFunctionDecl>(this) &&
+    cast<AbstractFunctionDecl>(this)->hasAsync();
 
   // Unary operators also include prefix/postfix.
   if (auto func = dyn_cast<FuncDecl>(this)) {
@@ -6962,10 +6969,13 @@ AbstractFunctionDecl::getObjCSelector(DeclName preferredName,
   }
 
   // The number of selector pieces we'll have.
+  Optional<ForeignAsyncConvention> asyncConvention
+    = getForeignAsyncConvention();
   Optional<ForeignErrorConvention> errorConvention
     = getForeignErrorConvention();
   unsigned numSelectorPieces
-    = argNames.size() + (errorConvention.hasValue() ? 1 : 0);
+    = argNames.size() + (asyncConvention.hasValue() ? 1 : 0)
+    + (errorConvention.hasValue() ? 1 : 0);
 
   // If we have no arguments, it's a nullary selector.
   if (numSelectorPieces == 0) {
@@ -6984,6 +6994,14 @@ AbstractFunctionDecl::getObjCSelector(DeclName preferredName,
   unsigned argIndex = 0;
   for (unsigned piece = 0; piece != numSelectorPieces; ++piece) {
     if (piece > 0) {
+      // If we have an async convention that inserts a completion handler
+      // parameter here, add "completionHandler".
+      if (asyncConvention &&
+          piece == asyncConvention->completionHandlerParamIndex()) {
+        selectorPieces.push_back(ctx.getIdentifier("completionHandler"));
+        continue;
+      }
+
       // If we have an error convention that inserts an error parameter
       // here, add "error".
       if (errorConvention &&
@@ -6997,12 +7015,21 @@ AbstractFunctionDecl::getObjCSelector(DeclName preferredName,
       continue;
     }
 
-    // For the first selector piece, attach either the first parameter
-    // or "AndReturnError" to the base name, if appropriate.
+    // For the first selector piece, attach either the first parameter,
+    // "withCompletionHandker", or "AndReturnError" to the base name,
+    // if appropriate.
     auto firstPiece = baseName;
     llvm::SmallString<32> scratch;
     scratch += firstPiece.str();
-    if (errorConvention && piece == errorConvention->getErrorParameterIndex()) {
+    if (asyncConvention &&
+        piece == asyncConvention->completionHandlerParamIndex()) {
+      // The completion handler is first; append "WithCompletionHandler".
+      camel_case::appendSentenceCase(scratch, "WithCompletionHandler");
+
+      firstPiece = ctx.getIdentifier(scratch);
+      didStringManipulation = true;
+    } else if (errorConvention &&
+               piece == errorConvention->getErrorParameterIndex()) {
       // The error is first; append "AndReturnError".
       camel_case::appendSentenceCase(scratch, "AndReturnError");
 

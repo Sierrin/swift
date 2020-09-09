@@ -4386,6 +4386,7 @@ namespace {
         kind = SpecialMethodKind::NSDictionarySubscriptGetter;
 
       // Import the type that this method will have.
+      Optional<ForeignAsyncConvention> asyncConvention;
       Optional<ForeignErrorConvention> errorConvention;
 
       // If we have a property accessor, find the corresponding property
@@ -4424,7 +4425,7 @@ namespace {
         importedType = Impl.importMethodParamsAndReturnType(
             dc, decl, decl->parameters(), decl->isVariadic(),
             isInSystemModule(dc), &bodyParams, importedName,
-            errorConvention, kind);
+            asyncConvention, errorConvention, kind);
       }
       if (!importedType)
         return nullptr;
@@ -4446,10 +4447,10 @@ namespace {
       // Determine whether the function is throwing and/or async.
       bool throws = importedName.getErrorInfo().hasValue();
       bool async = false;
-      auto asyncConvention = importedName.getAsyncInfo();
-      if (asyncConvention) {
+      auto asyncInfo = importedName.getAsyncInfo();
+      if (asyncInfo) {
         async = true;
-        if (asyncConvention->isThrowing())
+        if (asyncInfo->isThrowing())
           throws = true;
       }
 
@@ -6387,11 +6388,14 @@ ConstructorDecl *SwiftDeclConverter::importConstructor(
   assert(ownerNominal && "Method in non-type context?");
 
   // Import the type that this method will have.
+  Optional<ForeignAsyncConvention> asyncConvention;
   Optional<ForeignErrorConvention> errorConvention;
   ParameterList *bodyParams;
   auto importedType = Impl.importMethodParamsAndReturnType(
       dc, objcMethod, args, variadic, isInSystemModule(dc), &bodyParams,
-      importedName, errorConvention, SpecialMethodKind::Constructor);
+      importedName, asyncConvention, errorConvention,
+      SpecialMethodKind::Constructor);
+  assert(!asyncConvention && "Initializers don't have async conventions");
   if (!importedType)
     return nullptr;
 
